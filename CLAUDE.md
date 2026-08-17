@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-The project uses [`hatch`](https://hatch.pypa.io) (>=1.10.0) as its project manager. `hatch` is **not installed in this container**; `pytest`, `ruff` and `uv` are on `PATH` but are not importable as modules (`python3 -m pytest` fails — use the `pytest` binary or `devscripts/run_tests.py`).
+The project uses [`hatch`](https://hatch.pypa.io) (>=1.10.0) as its project manager. Every `hatch` command below has a plain-Python equivalent, since `hatch` is often not installed.
 
 ```shell
 # --- with hatch (preferred when available) ---
@@ -40,15 +40,7 @@ Notes on tests:
 - For tests needing credentials, create `test/local_parameters.json` (gitignored) with `usenetrc`/`username`+`password`/`cookiefile`; it is merged over `test/parameters.json`.
 - `test/conftest.py` defines the `handler` fixture plus `skip_handler`/`skip_handler_if`/`skip_handlers_if`/`handler_flaky` markers — networking tests are parameterized across request handlers.
 
-Build/codegen:
-```shell
-python3 devscripts/make_lazy_extractors.py     # generates yt_dlp/extractor/lazy_extractors.py (gitignored)
-python3 devscripts/update-version.py           # date-based version bump
-python3 -m bundle.pyinstaller                  # standalone executable
-make yt-dlp                                    # zipapp binary; `make` also regenerates docs/completions
-make                                           # lazy-extractors + binary + README/manpage/completions/supportedsites
-```
-`README.md`, `supportedsites.md`, `yt-dlp.1`, shell completions and the issue templates are **generated** from `yt_dlp/options.py` and the extractor list — edit the sources, then regenerate via `make doc`, never hand-edit the generated files.
+Build and codegen commands are documented in [README.md#compile](README.md#compile) and the `Makefile`. The one thing to know before editing: `README.md`, `supportedsites.md`, `yt-dlp.1`, shell completions and the issue templates are **generated** from `yt_dlp/options.py` and the extractor list — edit the sources, then regenerate via `make doc`, never hand-edit the generated files.
 
 Commit messages follow the changelog-scoped style: `[ie/sitename] Fix extractor`, `[ie] ...`, `[core] ...`, `[build] ...`, `[ci] ...`, `[cleanup] ...`, `[devscripts] ...`, `[rh:curl_cffi] ...`. `devscripts/make_changelog.py` parses these prefixes.
 
@@ -79,29 +71,22 @@ The **info dict** is the central data structure; its full field contract is docu
 
 Writing an extractor: subclass `InfoExtractor`, set `_VALID_URL` (a regex with a named `(?P<id>...)` group, or a sequence of regexes; `False` marks an embed-only extractor) and `_TESTS`, implement `_real_extract(url)`. Optional hooks: `_real_initialize`, `_initialize_pre_login`, `_perform_login` (with `_NETRC_MACHINE`). Class flags `_WORKING = False` (broken) and `_ENABLED = False` (not auto-selected) control availability; `_GEO_COUNTRIES`/`_GEO_IP_BLOCKS`/`_GEO_BYPASS` drive the geo-bypass retry in `InfoExtractor.extract`.
 
-`common.py` provides the download/parse helper layer used by every extractor: `_download_webpage`/`_download_json`/`_download_xml` (+ `_handle` variants), `_search_regex`/`_html_search_regex`/`_search_json`, `_og_search_*`/`_html_search_meta`, `_search_json_ld`, `_search_nextjs_data`/`_search_nuxt_data`, and manifest parsers `_extract_m3u8_formats`, `_extract_mpd_formats`, `_extract_ism_formats`, `_extract_f4m_formats`. Prefer these over hand-rolled `re`/`json` code.
+`common.py` provides the download/parse/manifest helper layer (`_download_*`, `_search_regex`, `_search_json_ld`, `_extract_m3u8_formats`, …). Prefer these over hand-rolled `re`/`json` code — read the class before writing a new extractor.
 
-YouTube is a package (`extractor/youtube/`) split into `_base.py`, `_video.py`, `_tab.py`, `_search.py`, etc., with two pluggable provider frameworks that have their own READMEs and stable public APIs:
+YouTube is a package (`extractor/youtube/`) with two pluggable provider frameworks that have their own READMEs and stable public APIs; both use a `_registry.py` + `_director.py` pattern to select among registered providers:
 - `youtube/pot/` — PO Token providers (`pot.provider`, `pot.cache`, `pot.utils` are public; the rest is internal).
 - `youtube/jsc/` — JS challenge (n/sig) solvers (`jsc.provider` is public).
 
-Both use a `_registry.py` + `_director.py` pattern to select among registered providers.
-
-### Downloaders (`yt_dlp/downloader/`)
-
-`get_suitable_downloader()` maps `info_dict['protocol']` through `PROTOCOL_MAP` to a `FileDownloader` subclass (`HlsFD`, `DashSegmentsFD`, `HttpFD`, `IsmFD`, `FFmpegFD`, …), with special-casing for multi-protocol (`+`-joined) formats and external downloaders (`external.py`: aria2c, curl, wget, ffmpeg). `fragment.py` is the shared base for all segmented protocols.
-
-### Networking (`yt_dlp/networking/`)
-
-An abstraction over multiple HTTP backends. `RequestDirector.send(Request)` sorts its registered `RequestHandler`s by the score from its `preferences` set, then dispatches to the first one whose `validate(request)` doesn't raise `UnsupportedRequest`; if none accept it, `NoSupportingHandlers` collects every rejection reason. Handlers declare `_SUPPORTED_URL_SCHEMES`, `_SUPPORTED_PROXY_SCHEMES` and `_SUPPORTED_FEATURES`, and register themselves via `register_rh` into `_REQUEST_HANDLERS`. Backends: `_urllib.py` (always available), `_requests.py`, `_curlcffi.py` (impersonation), `_websockets.py` — each imported defensively in `networking/__init__.py` so a missing optional dependency degrades instead of crashing. `impersonate.py` holds the browser-impersonation target matching.
-
 ### Plugins and globals
 
-`yt_dlp/globals.py` holds process-wide mutable state in `Indirect` boxes (`extractors`, `postprocessors`, `plugin_*`, `LAZY_EXTRACTORS`, `supported_js_runtimes`, …) so that modules can share state without import cycles. `yt_dlp/plugins.py` implements a custom `importlib` finder over the `yt_dlp_plugins` namespace package: a `PluginSpec` declares a module name, a class-name suffix (`IE`/`PP`) and destination `Indirect`s. Public classes ending in the suffix are collected, honoring `_`-prefixes and `__all__`. Setting `plugin_name=` as a class keyword argument makes a subclass *replace* the built-in it derives from. The plugin/globals API is explicitly documented as having no backwards-compatibility guarantee.
+`yt_dlp/globals.py` holds process-wide mutable state in `Indirect` boxes so that modules can share state without import cycles — that indirection is the whole point of the module. `yt_dlp/plugins.py` implements a custom `importlib` finder over the `yt_dlp_plugins` namespace package: a `PluginSpec` declares a module name, a class-name suffix (`IE`/`PP`) and destination `Indirect`s. Public classes ending in the suffix are collected, honoring `_`-prefixes and `__all__`. Setting `plugin_name=` as a class keyword argument makes a subclass *replace* the built-in it derives from. The plugin/globals API is explicitly documented as having no backwards-compatibility guarantee.
 
-### Utils
+### Other subsystems
 
-`yt_dlp/utils/` re-exports everything through `__init__.py` (`traversal.py` then `_utils.py`, with `_deprecated`/`_legacy` passthrough shims). `traverse_obj` (`traversal.py`) is the workhorse for pulling values out of parsed JSON/XML/HTML and is expected in new extractor code, along with `find_element`/`find_elements`, `subs_list_to_dict`, `require`/`value`. `jsinterp.py` is a pure-Python JS interpreter; `utils/_jsruntime.py` locates external JS runtimes (Deno etc.) for the newer challenge-solving path. `compat/` exists only for old-Python and legacy-API shims — most of its members are banned imports (see below).
+Each is a self-contained package whose entry point is obvious from its `__init__.py` — start there rather than reading the whole package:
+- `downloader/` — `get_suitable_downloader()` maps `info_dict['protocol']` through `PROTOCOL_MAP` to a `FileDownloader` subclass; `fragment.py` is the shared base for segmented protocols.
+- `networking/` — `RequestDirector.send()` scores registered `RequestHandler`s and dispatches to the first that accepts; backends are imported defensively so a missing optional dependency degrades instead of crashing.
+- `utils/` — everything is re-exported through `__init__.py`. `traverse_obj` is the expected way to pull values out of parsed JSON/XML/HTML in new code. `compat/` exists only for legacy shims and most of its members are banned imports (see below).
 
 ## Code style
 
