@@ -1156,7 +1156,6 @@ from .mlb import (
 )
 from .mlssoccer import MLSSoccerIE
 from .mnetplus import (
-    MnetPlusBaseIE,
     MnetPlusLiveIE,
     MnetPlusVideoIE,
 )

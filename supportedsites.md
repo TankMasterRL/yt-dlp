@@ -821,6 +821,8 @@ The only reliable way to check if a site is supported is to try it.
  - **MLBTV**: [*mlb*](## "netrc machine")
  - **MLBVideo**
  - **MLSSoccer**
+ - **MnetPlusLive**
+ - **MnetPlusVideo**
  - **MNetTV**: [*mnettv*](## "netrc machine")
  - **MNetTVLive**: [*mnettv*](## "netrc machine")
  - **MNetTVRecordings**: [*mnettv*](## "netrc machine")

@@ -10,8 +10,6 @@ from ..utils import (
 
 
 class MnetPlusBaseIE(InfoExtractor):
-    _VALID_URL = False
-
     def _get_auth_headers(self, url):
         cookies = self._get_cookies(url)
         bearer_token = traverse_obj(cookies, ('_mnet_atk', 'value'))
@@ -26,10 +24,9 @@ class MnetPlusBaseIE(InfoExtractor):
 
     def _set_cloudfront_cookies(self, video_domain, cloudfront_response):
         for key in ('policy', 'signature', 'keyPairId'):
-            value = cloudfront_response.get(key)
-            if value:
-                cookie_name = value.split('=')[0]
-                cookie_value = value.split('=', 1)[1]
+            value = traverse_obj(cloudfront_response, (key, {str})) or ''
+            cookie_name, sep, cookie_value = value.partition('=')
+            if sep:
                 self._set_cookie(video_domain, cookie_name, cookie_value)
 
     def _get_subtitles(self, captions_domain, video_id, caption_id, duration, lang_configs, headers):
@@ -45,14 +42,16 @@ class MnetPlusBaseIE(InfoExtractor):
     def _fetch_captions(self, captions_domain, video_id, caption_id, duration, lang_configs, headers, ai_only, write_param):
         # Mnet Plus seems to have two subtitle systems
         # - Standard subtitle stream approach baked into the HLS streams
-        # - A custom JSON API-based system, on the /cue endpoint for videos and the /contents endpoint for livestreams, that reports subs in JSON.
+        # - A custom JSON API-based system, on the /cue endpoint for videos and the
+        #   /contents endpoint for livestreams, that reports subs in JSON.
         #
-        # The HLS based subs get added in _extract_m3u8_formats_and_subtitles in the extractors below, the custom subs get added here, via the _fetch_cues_to_srt helper function.
+        # The HLS based subs get added in _extract_m3u8_formats_and_subtitles in the
+        # extractors below, the custom subs get added here, via the _fetch_cues_to_srt helper.
         if not caption_id:
             return {}
 
         subtitles = {}
-        for lang_config in lang_configs or []:
+        for lang_config in traverse_obj(lang_configs, (..., {dict})):
             language_code = lang_config.get('language')
             if not language_code:
                 continue
@@ -61,9 +60,9 @@ class MnetPlusBaseIE(InfoExtractor):
             if ai_only != is_ai:
                 continue
 
-            # _fetch_captions gets called when user passes --list-subs or --write-subs/--write-auto-subs.
-            # The code below ensures we don't fetch the entire subtitle stream when the user did not explicitly pass --write
-            # because mnet's custom subtitle system needs api requests every 15 seconds of video and is thus rather slow.
+            # This is reached for --list-subs as well as --write-subs/--write-auto-subs.
+            # Only fetch the actual cues for the latter, because mnet's custom subtitle
+            # system needs an api request every 15 seconds of video and is thus rather slow.
             if not self.get_param(write_param):
                 subtitles.setdefault(language_code, []).append({'ext': 'srt', 'name': 'mnet custom subtitles'})
                 continue
@@ -79,13 +78,13 @@ class MnetPlusBaseIE(InfoExtractor):
         # - make request to subtitle endpoint with a start offset of 0
         # - parse subs in content_map json field
         # - update start offset using captionIntervalSecond json field
-        # - repeat until done
+        # - repeat until the reported duration is reached, or until the api runs out of cues
         # This is what the javascript seems to be doing too. I don't know if it's possible to get all subs at once.
         cues = []
         offset = 0
         caption_interval = None
 
-        while offset < duration:
+        while duration is None or offset < duration:
             cues_url = update_url_query(
                 captions_url.format(video_id=video_id, caption_id=caption_id),
                 {'language': language, 'displaySecond': offset})
@@ -104,7 +103,8 @@ class MnetPlusBaseIE(InfoExtractor):
 
             if caption_interval is None:
                 caption_interval = int_or_none(cues_data.get('captionIntervalSecond'))
-                if caption_interval is None:
+                # A missing or non-positive interval would never advance the offset
+                if not caption_interval or caption_interval < 0:
                     break
 
             for cue_key in sorted(content_map.keys(), key=int):
@@ -128,7 +128,7 @@ class MnetPlusBaseIE(InfoExtractor):
 
 
 class MnetPlusVideoIE(MnetPlusBaseIE):
-    _VALID_URL = r'https?://(?:www\.)?mnetplus\.world/media/(?P<lang>[a-zA-Z-]+)/videos/(?P<id>[0-9a-f]+)'
+    _VALID_URL = r'https?://(?:www\.)?mnetplus\.world/media/[a-zA-Z-]+/videos/(?P<id>[0-9a-f]+)'
     _API_DOMAIN = 'https://api.mnetplus.world/media/v1/public/guests/videos/{video_id}'
     _COOKIES_DOMAIN = 'https://api.mnetplus.world/media/v2/public/videos/{video_id}/cookies'
     _CAPTIONS_DOMAIN = 'https://api.mnetplus.world/media/v1/public/videos/{video_id}/captions/{caption_id}/cues'
@@ -170,6 +170,9 @@ class MnetPlusVideoIE(MnetPlusBaseIE):
             'tags': [],
             'formats': 'mincount:6',
         },
+        'params': {
+            'skip_download': True,
+        },
         'skip': 'Requires authentication (cookies) for 4K quality',
     }, {
         'url': 'https://www.mnetplus.world/media/en/videos/695a57b0c5b5d509fb4888c1',
@@ -197,7 +200,10 @@ class MnetPlusVideoIE(MnetPlusBaseIE):
                 'tha': 'mincount:1',
             },
         },
-       'skip': 'Requires authentication for subs',
+        'params': {
+            'skip_download': True,
+        },
+        'skip': 'Requires authentication for subs',
     }, {
         'url': 'https://www.mnetplus.world/media/en/videos/69eec9721d39e70911e5ad2c',
         'info_dict': {
@@ -218,7 +224,10 @@ class MnetPlusVideoIE(MnetPlusBaseIE):
                 'ja': 'mincount:1',
             },
         },
-       'skip': 'Requires authentication for subs',
+        'params': {
+            'skip_download': True,
+        },
+        'skip': 'Requires authentication for subs',
     }, {
         'url': 'https://www.mnetplus.world/media/en/videos/69f84e9b1511b17e55001e7b',
         'info_dict': {
@@ -242,7 +251,13 @@ class MnetPlusVideoIE(MnetPlusBaseIE):
                 'zh_TW': 'mincount:1',
             },
         },
+        'params': {
+            'skip_download': True,
+        },
         'skip': 'Requires authentication for subs',
+    }, {
+        'url': 'https://mnetplus.world/media/ko/videos/69f82e651511b17e55000f2a',
+        'only_matching': True,
     }]
 
     def _real_extract(self, url):
@@ -253,78 +268,79 @@ class MnetPlusVideoIE(MnetPlusBaseIE):
             self._API_DOMAIN.format(video_id=video_id), video_id,
             errnote='Failed to get video information', headers=headers)
 
+        geo_block = traverse_obj(video_json, ('geoBlock', {dict})) or {}
+        if geo_block.get('isBlocked'):
+            self.raise_geo_restricted(
+                geo_block.get('blockedMessage') or 'This video is not available in your region')
+
+        duration = int_or_none(video_json.get('videoLength'), scale=1000)
+
+        formats, hls_subtitles = [], {}
         video_master_url = traverse_obj(video_json, ('videoUrl', {url_or_none}))
         if not video_master_url:
             self.raise_no_formats('No video master URL found in API response', expected=True)
-
-        video_master_url = update_url_query(video_master_url, {'maxResolution': None})
-
-        # Authenticated users get a m3u8 master url with /converted/.
-        # Non-authenticated users get a m3u8 master url with /preview/ that only has a few seconds of playback at low quality.
-        if '/converted/' in video_master_url:
-            cloudfront = self._download_json(
-                self._COOKIES_DOMAIN.format(video_id=video_id), video_id,
-                errnote='Failed to download per-video cookie credentials',
-                data=b'', headers=headers)
-            self._set_cloudfront_cookies(self._VIDEO_DOMAIN, cloudfront)
         else:
-            self.report_warning(f'Only extracting preview quality and length. Full quality requires authentication. {self._login_hint("cookies")}')
+            video_master_url = update_url_query(video_master_url, {'maxResolution': None})
 
-        geo_block = video_json.get('geoBlock', {})
-        if geo_block.get('isBlocked'):
-            self.raise_geo_restricted(geo_block.get('blockedMessage', 'This video is not available in your region'))
+            # Authenticated users get a m3u8 master url with /converted/.
+            # Non-authenticated users get a m3u8 master url with /preview/ that only has
+            # a few seconds of playback at low quality.
+            if '/converted/' in video_master_url:
+                cloudfront = self._download_json(
+                    self._COOKIES_DOMAIN.format(video_id=video_id), video_id,
+                    errnote='Failed to download per-video cookie credentials',
+                    data=b'', headers=headers)
+                self._set_cloudfront_cookies(self._VIDEO_DOMAIN, cloudfront)
+            else:
+                self.report_warning(
+                    'Only extracting preview quality and length. '
+                    f'Full quality requires authentication. {self._login_hint("cookies")}')
 
-        title = video_json.get('name')
-        description = video_json.get('description')
-        thumbnail = traverse_obj(video_json, ('thumbnailUrl', {url_or_none}))
-        timestamp = parse_iso8601(video_json.get('startAt'))
-        duration = int_or_none(video_json.get('videoLength'), scale=1000)
-        view_count = int_or_none(video_json.get('viewCount'))
-        like_count = int_or_none(video_json.get('likeCount'))
-        comment_count = int_or_none(video_json.get('commentCount'))
-        tags = [t.lstrip('#') for t in traverse_obj(video_json, ('tags', ...)) or []]
-
-        formats, hls_subtitles = self._extract_m3u8_formats_and_subtitles(
-            video_master_url, video_id, 'mp4', m3u8_id='hls', fatal=False)
+            formats, hls_subtitles = self._extract_m3u8_formats_and_subtitles(
+                video_master_url, video_id, 'mp4', m3u8_id='hls', fatal=False)
 
         video_caption = traverse_obj(video_json, ('videoCaption', {dict})) or {}
         caption_id = video_caption.get('videoCaptionId')
         lang_configs = video_caption.get('languageConfigs')
-        api_subtitles = self._get_subtitles(self._CAPTIONS_DOMAIN, video_id, caption_id, duration, lang_configs, headers)
-        automatic_captions = self._get_automatic_captions(self._CAPTIONS_DOMAIN, video_id, caption_id, duration, lang_configs, headers)
-
-        subtitles = {}
-        for lang, sub_entries in hls_subtitles.items():
-            subtitles.setdefault(lang, []).extend(sub_entries)
-        for lang, sub_entries in api_subtitles.items():
-            subtitles.setdefault(lang, []).extend(sub_entries)
-
-        http_headers = {'Referer': 'https://www.mnetplus.world/'}
+        api_subtitles = self.extract_subtitles(
+            self._CAPTIONS_DOMAIN, video_id, caption_id, duration, lang_configs, headers)
+        automatic_captions = self.extract_automatic_captions(
+            self._CAPTIONS_DOMAIN, video_id, caption_id, duration, lang_configs, headers)
 
         return {
             'id': video_id,
-            'title': title,
-            'description': description,
-            'thumbnail': thumbnail,
-            'timestamp': timestamp,
             'duration': duration,
-            'view_count': view_count,
-            'like_count': like_count,
-            'comment_count': comment_count,
-            'tags': tags,
             'formats': formats,
-            'subtitles': subtitles,
+            'subtitles': self._merge_subtitles(hls_subtitles, api_subtitles),
             'automatic_captions': automatic_captions,
-            'http_headers': http_headers,
+            'tags': [tag.removeprefix('#') for tag in traverse_obj(video_json, ('tags', ..., {str}))],
+            'http_headers': {'Referer': 'https://www.mnetplus.world/'},
+            **traverse_obj(video_json, {
+                'title': ('name', {str}),
+                'description': ('description', {str}),
+                'thumbnail': ('thumbnailUrl', {url_or_none}),
+                'timestamp': ('startAt', {parse_iso8601}),
+                'view_count': ('viewCount', {int_or_none}),
+                'like_count': ('likeCount', {int_or_none}),
+                'comment_count': ('commentCount', {int_or_none}),
+            }),
         }
 
 
 class MnetPlusLiveIE(MnetPlusBaseIE):
-    _VALID_URL = r'https?://(?:www\.)?mnetplus\.world/media/(?P<lang>[a-zA-Z-]+)/lives/(?P<id>[0-9a-f]+)'
+    _VALID_URL = r'https?://(?:www\.)?mnetplus\.world/media/[a-zA-Z-]+/lives/(?P<id>[0-9a-f]+)'
     _API_DOMAIN = 'https://api.mnetplus.world/media/v1/public/lives/{video_id}/trace?drmType=NONE'
     _LIVE_INFO_DOMAIN = 'https://api.mnetplus.world/media/v1/public/guests/lives/{video_id}'
     _COOKIES_DOMAIN = 'https://api.mnetplus.world/media/v2/public/lives/{video_id}/cookies'
     _VIDEO_DOMAIN = 'live.cdn.mnetplus.world'
+    _TESTS = [{
+        # Live broadcasts are only available while they are on air
+        'url': 'https://www.mnetplus.world/media/en/lives/6979a2f4b78a3d0e2a6f1c85',
+        'only_matching': True,
+    }, {
+        'url': 'https://mnetplus.world/media/ko/lives/6979a2f4b78a3d0e2a6f1c85',
+        'only_matching': True,
+    }]
 
     def _real_extract(self, url):
         video_id = self._match_id(url)
@@ -334,60 +350,50 @@ class MnetPlusLiveIE(MnetPlusBaseIE):
             self._LIVE_INFO_DOMAIN.format(video_id=video_id), video_id,
             errnote='Failed to get live stream metadata', headers=headers)
 
-        title = traverse_obj(live_info, ('name', 'en')) or traverse_obj(live_info, ('name', {str}))
         timestamp = parse_iso8601(live_info.get('liveStartAt'))
-        duration = None
         live_end = parse_iso8601(live_info.get('liveEndAt'))
-        if timestamp and live_end:
-            duration = live_end - timestamp
 
+        video_json = {}
+        formats, subtitles = [], {}
         if live_info.get('status') == 'ARCHIVE':
             self.raise_no_formats('This live stream has ended and is no longer available', expected=True)
+        else:
+            video_json = self._download_json(
+                self._API_DOMAIN.format(video_id=video_id), video_id,
+                errnote='Failed to get live stream information',
+                data=b'', headers=headers)
 
-        video_json = self._download_json(
-            self._API_DOMAIN.format(video_id=video_id), video_id,
-            errnote='Failed to get live stream information',
-            data=b'', headers=headers)
+            geo_block = traverse_obj(video_json, ('geoBlock', {dict})) or {}
+            if geo_block.get('isBlocked'):
+                self.raise_geo_restricted(
+                    geo_block.get('blockedMessage') or 'This stream is not available in your region')
 
-        live_url = traverse_obj(video_json, ('liveUrl', {url_or_none}))
-        if not live_url:
-            self.raise_no_formats('No live stream URL found in API response', expected=True)
+            live_url = traverse_obj(video_json, ('liveUrl', {url_or_none}))
+            if not live_url:
+                self.raise_no_formats('No live stream URL found in API response', expected=True)
+            else:
+                cloudfront = self._download_json(
+                    self._COOKIES_DOMAIN.format(video_id=video_id), video_id,
+                    errnote='Failed to download per-stream cookie credentials',
+                    data=b'', headers=headers)
+                self._set_cloudfront_cookies(self._VIDEO_DOMAIN, cloudfront)
 
-        live_url = update_url_query(live_url, {'maxResolution': None})
-
-        cloudfront = self._download_json(
-            self._COOKIES_DOMAIN.format(video_id=video_id), video_id,
-            errnote='Failed to download per-stream cookie credentials',
-            data=b'', headers=headers)
-        self._set_cloudfront_cookies(self._VIDEO_DOMAIN, cloudfront)
-
-        geo_block = video_json.get('geoBlock', {})
-        if geo_block.get('isBlocked'):
-            self.raise_geo_restricted(geo_block.get('blockedMessage', 'This stream is not available in your region'))
-
-        description = video_json.get('description')
-        thumbnail = traverse_obj(video_json, ('thumbnailUrl', {url_or_none}))
-        view_count = int_or_none(video_json.get('viewCount'))
-
-        formats, hls_subtitles = self._extract_m3u8_formats_and_subtitles(
-            live_url, video_id, 'mp4', m3u8_id='hls', fatal=False)
-
-        subtitles = {}
-        for lang, sub_entries in hls_subtitles.items():
-            subtitles.setdefault(lang, []).extend(sub_entries)
-
-        http_headers = {'Referer': 'https://www.mnetplus.world/'}
+                formats, subtitles = self._extract_m3u8_formats_and_subtitles(
+                    update_url_query(live_url, {'maxResolution': None}),
+                    video_id, 'mp4', m3u8_id='hls', fatal=False)
 
         return {
             'id': video_id,
-            'title': title,
-            'description': description,
-            'thumbnail': thumbnail,
+            'title': traverse_obj(live_info, ('name', 'en', {str}), ('name', {str})),
             'timestamp': timestamp,
-            'duration': duration,
-            'view_count': view_count,
+            'duration': live_end - timestamp if timestamp and live_end else None,
             'formats': formats,
             'subtitles': subtitles,
-            'http_headers': http_headers,
             'is_live': video_json.get('status') == 'ON_AIR',
+            'http_headers': {'Referer': 'https://www.mnetplus.world/'},
+            **traverse_obj(video_json, {
+                'description': ('description', {str}),
+                'thumbnail': ('thumbnailUrl', {url_or_none}),
+                'view_count': ('viewCount', {int_or_none}),
+            }),
         }
